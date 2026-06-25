@@ -1,0 +1,421 @@
+// content-script.js — Injected at document_start before any page JS runs
+// Patches navigator.mediaDevices.getUserMedia to return pre-recorded video
+
+(function() {
+  'use strict';
+
+  // ── VISIBLE INJECTION PROOF ─────────────────────────────────────────
+  try {
+    const banner = document.createElement('div');
+    banner.id = 'cam-intercept-banner';
+    banner.textContent = '⚡ CAM INTERCEPTOR ACTIVE ⚡';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#e94560;color:#fff;text-align:center;padding:6px;font:bold 13px monospace;pointer-events:none;';
+    document.documentElement.appendChild(banner);
+    console.log('%c[CAM INTERCEPT]%c INJECTED — banner visible at top of page',
+      'color:#e94560;font-weight:bold', 'color:inherit');
+  } catch(e) {
+    console.error('[CAM INTERCEPT] Injection banner failed:', e);
+  }
+
+  // ── State ────────────────────────────────────────────────────────────
+  let interceptionEnabled = false;
+  let activeVideoData = null;    // base64 string
+  let activeVideoMime = null;   // video/webm, video/mp4, etc.
+  let activeVideoMeta = null;   // { width, height, frameRate, duration }
+  let videoElementCache = null; // cached <video> element for re-use
+  let storageReady = false;
+  let storageReadyResolve;
+  const storageReadyPromise = new Promise(r => { storageReadyResolve = r; });
+
+  const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+
+  // ── Spoofed capabilities / settings ─────────────────────────────────
+  const SPOOFED_CAPABILITIES = {
+    width: { min: 320, max: 1920 },
+    height: { min: 240, max: 1080 },
+    frameRate: { min: 1, max: 30 },
+    facingMode: ['user'],
+    resizeMode: ['none', 'crop-and-scale'],
+    aspectRatio: { min: 0.5, max: 2.0 },
+    deviceId: 'default-camera-interceptor',
+    groupId: 'default-group-interceptor'
+  };
+
+  function buildSpoofedSettings(meta) {
+    return {
+      width: meta?.width || 1280,
+      height: meta?.height || 720,
+      frameRate: meta?.frameRate || 30,
+      deviceId: 'default-camera-interceptor',
+      facingMode: 'user',
+      aspectRatio: (meta?.width || 1280) / (meta?.height || 720)
+    };
+  }
+
+  // ── Video helpers ────────────────────────────────────────────────────
+  function createHiddenVideo(base64Data, mimeType) {
+    // Re-use cached element if available
+    if (videoElementCache) {
+      videoElementCache.pause();
+      videoElementCache.removeAttribute('src');
+    }
+
+    const video = document.createElement('video');
+    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.crossOrigin = 'anonymous';
+
+    // Convert base64 to blob URL
+    const byteChars = atob(base64Data);
+    const byteNums = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      byteNums[i] = byteChars.charCodeAt(i);
+    }
+    const byteArr = new Uint8Array(byteNums);
+    const blob = new Blob([byteArr], { type: mimeType || 'video/webm' });
+    const url = URL.createObjectURL(blob);
+
+    video.src = url;
+    document.body.appendChild(video);
+    videoElementCache = video;
+    return video;
+  }
+
+  function waitForVideoReady(video) {
+    return new Promise((resolve, reject) => {
+      if (video.readyState >= 3) {
+        resolve();
+        return;
+      }
+      video.addEventListener('canplay', () => resolve(), { once: true });
+      video.addEventListener('error', (e) => reject(e), { once: true });
+      video.load();
+    });
+  }
+
+  // ── Track wrapper — patches MediaStreamTrack methods ────────────────
+  function wrapVideoTrack(originalTrack, meta) {
+    const settings = buildSpoofedSettings(meta);
+    const constraints = { video: { width: settings.width, height: settings.height } };
+
+    // Override methods on the track prototype for this instance
+    const origGetCapabilities = originalTrack.getCapabilities?.bind(originalTrack);
+    const origGetSettings = originalTrack.getSettings?.bind(originalTrack);
+    const origGetConstraints = originalTrack.getConstraints?.bind(originalTrack);
+    const origApplyConstraints = originalTrack.applyConstraints?.bind(originalTrack);
+    const origClone = originalTrack.clone?.bind(originalTrack);
+    const origStop = originalTrack.stop?.bind(originalTrack);
+
+    originalTrack.getCapabilities = function() {
+      try {
+        const realCaps = origGetCapabilities ? origGetCapabilities() : {};
+        return { ...SPOOFED_CAPABILITIES, ...realCaps, deviceId: SPOOFED_CAPABILITIES.deviceId };
+      } catch (e) {
+        return { ...SPOOFED_CAPABILITIES };
+      }
+    };
+
+    originalTrack.getSettings = function() {
+      try {
+        const realSettings = origGetSettings ? origGetSettings() : {};
+        return { ...realSettings, ...settings };
+      } catch (e) {
+        return { ...settings };
+      }
+    };
+
+    originalTrack.getConstraints = function() {
+      try {
+        return origGetConstraints ? origGetConstraints() : constraints;
+      } catch (e) {
+        return { ...constraints };
+      }
+    };
+
+    originalTrack.applyConstraints = function(newConstraints) {
+      // Accept and resolve — no-op since video is fixed resolution
+      return Promise.resolve();
+    };
+
+    originalTrack.clone = function() {
+      const cloned = origClone ? origClone() : originalTrack;
+      return wrapVideoTrack(cloned, meta);
+    };
+
+    // Spoof label — generic, unsuspicious
+    Object.defineProperty(originalTrack, 'label', {
+      get: function() { return 'USB Camera'; },
+      configurable: true
+    });
+
+    return originalTrack;
+  }
+
+  // ── Cache of active interception promises (prevents dupes) ──────────
+  let activeInterceptionPromise = null;
+
+  // ── Core interception function ───────────────────────────────────────
+  async function interceptGetUserMedia(constraints) {
+    // If already processing, return the same promise
+    if (activeInterceptionPromise) {
+      try { return await activeInterceptionPromise; } catch (e) { /* fall through */ }
+    }
+
+    activeInterceptionPromise = (async () => {
+      // Load stored video
+      const storage = await chrome.storage.local.get(['activeVideoData', 'activeVideoMime', 'activeVideoMeta']);
+      const videoData = storage.activeVideoData;
+      const videoMime = storage.activeVideoMime || 'video/webm';
+      const videoMeta = storage.activeVideoMeta || null;
+
+      if (!videoData) {
+        throw new DOMException('No video source loaded', 'NotReadableError');
+      }
+
+      // Create hidden video, load, wait for ready
+      const video = createHiddenVideo(videoData, videoMime);
+      await waitForVideoReady(video);
+
+      // Capture stream from video element
+      let stream;
+      try {
+        stream = video.captureStream(30);
+      } catch (e) {
+        // Fallback: captureStream may not be available; try alternative
+        stream = video.captureStream ? video.captureStream(30) : null;
+        if (!stream) throw new DOMException('captureStream not supported', 'NotSupportedError');
+      }
+
+      // Wrap each video track with spoofed properties
+      const videoTracks = stream.getVideoTracks();
+      for (const track of videoTracks) {
+        wrapVideoTrack(track, videoMeta);
+      }
+
+      // Start playback
+      video.loop = true;
+      await video.play();
+
+      // Log interception
+      chrome.runtime.sendMessage({
+        type: 'ADD_LOG',
+        entry: {
+          event: 'interception',
+          url: window.location.href,
+          trackCount: videoTracks.length,
+          trackLabel: videoTracks[0]?.label || 'unknown'
+        }
+      }).catch(() => {});
+
+      return stream;
+    })();
+
+    try {
+      return await activeInterceptionPromise;
+    } finally {
+      activeInterceptionPromise = null;
+    }
+  }
+
+  // ── Patch getUserMedia ──────────────────────────────────────────────
+  navigator.mediaDevices.getUserMedia = async function(constraints) {
+    // Wait for storage to load so we know the real interceptionEnabled state
+    if (!storageReady) await storageReadyPromise;
+
+    if (!interceptionEnabled) {
+      return originalGetUserMedia(constraints);
+    }
+
+    try {
+      return await interceptGetUserMedia(constraints);
+    } catch (e) {
+      console.warn('[CamIntercept] Interception failed, falling back to real camera:', e);
+      return originalGetUserMedia(constraints);
+    }
+  };
+
+  // ── Patch enumerateDevices ────────────────────────────────────────
+  navigator.mediaDevices.enumerateDevices = async function() {
+    if (!storageReady) await storageReadyPromise;
+
+    if (!interceptionEnabled) {
+      return originalEnumerateDevices();
+    }
+
+    try {
+      // Get real devices but filter out video inputs, add our spoofed one
+      const realDevices = await originalEnumerateDevices();
+      const spoofedVideo = {
+        deviceId: SPOOFED_CAPABILITIES.deviceId,
+        kind: 'videoinput',
+        label: 'USB Camera',
+        groupId: SPOOFED_CAPABILITIES.groupId
+      };
+
+      // Keep audio devices and non-videoinput devices, replace all videoinputs with our one
+      const filtered = realDevices.filter(d => d.kind !== 'videoinput');
+      filtered.unshift(spoofedVideo);
+      return filtered;
+    } catch (e) {
+      console.warn('[CamIntercept] enumerateDevices patch failed, fallback:', e);
+      return originalEnumerateDevices();
+    }
+  };
+
+  // ── Patch ImageCapture (if available) ───────────────────────────────
+  if (typeof ImageCapture !== 'undefined') {
+    const OriginalImageCapture = ImageCapture;
+
+    // We can't replace the constructor directly, but we can wrap it
+    // The page creates `new ImageCapture(track)` — we patch the prototype
+    const origTakePhoto = ImageCapture.prototype.takePhoto;
+    const origGrabFrame = ImageCapture.prototype.grabFrame;
+
+    ImageCapture.prototype.takePhoto = function() {
+      if (interceptionEnabled && videoElementCache && videoElementCache.readyState >= 2) {
+        return captureFrameAsBlob(videoElementCache, 'image/jpeg', 0.92);
+      }
+      return origTakePhoto.call(this);
+    };
+
+    ImageCapture.prototype.grabFrame = function() {
+      if (interceptionEnabled && videoElementCache && videoElementCache.readyState >= 2) {
+        return captureFrameAsBitmap(videoElementCache);
+      }
+      return origGrabFrame.call(this);
+    };
+  }
+
+  function captureFrameAsBlob(video, mimeType, quality) {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), mimeType, quality);
+    });
+  }
+
+  function captureFrameAsBitmap(video) {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return createImageBitmap(canvas);
+  }
+
+  // ── Message listener (popup ↔ content script) ──────────────────────
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    switch (message.type) {
+      case 'SET_INTERCEPTION_STATE':
+        interceptionEnabled = message.enabled;
+        sendResponse({ success: true });
+        break;
+
+      case 'GET_INTERCEPTION_STATE':
+        sendResponse({ enabled: interceptionEnabled });
+        break;
+
+      case 'UPDATE_VIDEO_SOURCE':
+        activeVideoData = message.videoData;
+        activeVideoMime = message.videoMime;
+        activeVideoMeta = message.videoMeta;
+        // Invalidate cache so next interception creates fresh element
+        if (videoElementCache) {
+          videoElementCache.pause();
+          videoElementCache.removeAttribute('src');
+          videoElementCache.remove();
+          videoElementCache = null;
+        }
+        activeInterceptionPromise = null;
+        sendResponse({ success: true });
+        break;
+
+      default:
+        sendResponse({ success: false, error: 'Unknown message type' });
+    }
+    return true;
+  });
+
+  // ── window.postMessage listener (for test page automation) ───────
+  window.addEventListener('message', (event) => {
+    // Only accept messages from the same window
+    if (event.source !== window) return;
+
+    const msg = event.data;
+    if (!msg || msg.source !== 'cam-interceptor-test') return;
+
+    switch (msg.type) {
+      case 'SET_INTERCEPTION_STATE':
+        interceptionEnabled = msg.enabled;
+        console.log('[CamIntercept] Interception', msg.enabled ? 'ENABLED' : 'DISABLED', 'via postMessage');
+        if (msg.videoData) {
+          activeVideoData = msg.videoData;
+          activeVideoMime = msg.videoMime || 'video/webm';
+          activeVideoMeta = msg.videoMeta || null;
+          if (videoElementCache) {
+            videoElementCache.pause();
+            videoElementCache.removeAttribute('src');
+            videoElementCache.remove();
+            videoElementCache = null;
+          }
+          activeInterceptionPromise = null;
+          console.log('[CamIntercept] Video source updated via postMessage');
+        }
+        break;
+
+      case 'GET_INTERCEPTION_STATE':
+        window.postMessage({
+          source: 'cam-interceptor-test',
+          type: 'INTERCEPTION_STATE_RESPONSE',
+          enabled: interceptionEnabled,
+          hasVideo: !!activeVideoData
+        }, '*');
+        break;
+    }
+  });
+
+  // ── Init: load state from storage ──────────────────────────────────
+  chrome.storage.local.get(['interceptionEnabled', 'activeVideoData', 'activeVideoMime', 'activeVideoMeta'], (data) => {
+    interceptionEnabled = data.interceptionEnabled || false;
+    activeVideoData = data.activeVideoData || null;
+    activeVideoMime = data.activeVideoMime || null;
+    activeVideoMeta = data.activeVideoMeta || null;
+    storageReady = true;
+    storageReadyResolve();
+    console.log('[CamIntercept] Storage loaded. Interception:', interceptionEnabled ? 'ON' : 'OFF');
+  });
+
+  // Listen for storage changes (popup updates)
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+
+    if (changes.interceptionEnabled) {
+      interceptionEnabled = changes.interceptionEnabled.newValue;
+    }
+    if (changes.activeVideoData) {
+      activeVideoData = changes.activeVideoData.newValue;
+    }
+    if (changes.activeVideoMime) {
+      activeVideoMime = changes.activeVideoMime.newValue;
+    }
+    if (changes.activeVideoMeta) {
+      activeVideoMeta = changes.activeVideoMeta.newValue;
+    }
+
+    // Invalidate cache on source change
+    if (changes.activeVideoData && videoElementCache) {
+      videoElementCache.pause();
+      videoElementCache.removeAttribute('src');
+      videoElementCache.remove();
+      videoElementCache = null;
+      activeInterceptionPromise = null;
+    }
+  });
+
+  console.log('[CamIntercept] Content script injected, getUserMedia patched. Interception:', interceptionEnabled ? 'ON' : 'OFF');
+})();

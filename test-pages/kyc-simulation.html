@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KYC Simulation — Full Verification Flow</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a1e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    .kyc-container {
+      max-width: 800px;
+      width: 100%;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 12px;
+      padding: 30px;
+      margin-top: 20px;
+    }
+    h1 { font-size: 20px; text-align: center; margin-bottom: 4px; }
+    .subtitle { text-align: center; color: #606080; font-size: 13px; margin-bottom: 24px; }
+    .step-indicator {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .step-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #2a2a4a;
+      transition: background 0.3s;
+    }
+    .step-dot.active { background: #e94560; }
+    .step-dot.done { background: #00c853; }
+    .step-dot.fail { background: #ff1744; }
+    .stream-area {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      justify-content: center;
+    }
+    .stream-box {
+      text-align: center;
+    }
+    .stream-box h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #a0a0b8;
+      margin-bottom: 6px;
+    }
+    video, img {
+      max-width: 340px;
+      max-height: 260px;
+      border-radius: 6px;
+      border: 1px solid #2a2a4a;
+    }
+    .metadata-panel {
+      background: #0a0a1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+    }
+    .metadata-panel h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #a0a0b8;
+      margin-bottom: 6px;
+    }
+    .meta-row { display: flex; justify-content: space-between; padding: 1px 0; }
+    .meta-key { color: #606080; }
+    .meta-value { color: #8080c0; }
+    .verdict {
+      text-align: center;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      margin-top: 20px;
+    }
+    .verdict.complete { background: rgba(0,200,83,0.15); color: #00c853; border: 1px solid rgba(0,200,83,0.3); }
+    .verdict.failed { background: rgba(255,23,68,0.15); color: #ff1744; border: 1px solid rgba(255,23,68,0.3); }
+    .verdict.pending { background: rgba(100,100,160,0.15); color: #8080c0; border: 1px solid rgba(100,100,160,0.3); }
+    .btn {
+      display: block;
+      margin: 16px auto 0;
+      padding: 10px 32px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn:hover { background: #ff6b81; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error-panel {
+      background: rgba(255,23,68,0.1);
+      border: 1px solid rgba(255,23,68,0.3);
+      border-radius: 6px;
+      padding: 10px;
+      margin-top: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: #ff1744;
+      display: none;
+    }
+    .error-panel.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="kyc-container">
+    <h1>Identity Verification</h1>
+    <p class="subtitle">KYC Camera Verification — Automated Flow</p>
+
+    <!-- Step indicators -->
+    <div class="step-indicator">
+      <div class="step-dot" id="step-0"></div>
+      <div class="step-dot" id="step-1"></div>
+      <div class="step-dot" id="step-2"></div>
+      <div class="step-dot" id="step-3"></div>
+      <div class="step-dot" id="step-4"></div>
+      <div class="step-dot" id="step-5"></div>
+    </div>
+
+    <!-- Stream / Photo display -->
+    <div class="stream-area">
+      <div class="stream-box">
+        <h3>Live Stream</h3>
+        <video id="kyc-video" autoplay playsinline muted></video>
+      </div>
+      <div class="stream-box">
+        <h3>Captured Photo</h3>
+        <img id="kyc-photo" alt="Photo will appear here" style="min-width:200px;min-height:150px;background:#0a0a1e;">
+      </div>
+    </div>
+
+    <!-- Metadata -->
+    <div class="metadata-panel">
+      <h3>Track Metadata</h3>
+      <div id="metadata-content">
+        <div class="meta-row"><span class="meta-key">Label:</span><span class="meta-value" id="meta-label">—</span></div>
+        <div class="meta-row"><span class="meta-key">Capabilities:</span><span class="meta-value" id="meta-caps">—</span></div>
+        <div class="meta-row"><span class="meta-key">Settings:</span><span class="meta-value" id="meta-settings">—</span></div>
+        <div class="meta-row"><span class="meta-key">Constraints:</span><span class="meta-value" id="meta-constraints">—</span></div>
+      </div>
+    </div>
+
+    <!-- Verdict -->
+    <div class="verdict pending" id="verdict">Awaiting verification...</div>
+
+    <!-- Errors -->
+    <div class="error-panel" id="error-panel"></div>
+
+    <!-- Button -->
+    <button class="btn" id="start-btn" onclick="runKYC()">Start KYC Verification</button>
+  </div>
+
+  <script>
+    const steps = 6;
+    const stepDots = [];
+    for (let i = 0; i < steps; i++) stepDots.push(document.getElementById(`step-${i}`));
+
+    function setStep(index, status) {
+      stepDots[index].className = `step-dot ${status}`;
+    }
+
+    async function waitForVideoFrame(video, timeoutMs = 5000) {
+      const start = Date.now();
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          if (video.videoWidth > 0 && video.readyState >= 2) {
+            resolve();
+          } else if (Date.now() - start > timeoutMs) {
+            reject(new Error('Timeout waiting for video frame'));
+          } else {
+            requestAnimationFrame(check);
+          }
+        };
+        check();
+      });
+    }
+
+    function showError(msg) {
+      const panel = document.getElementById('error-panel');
+      panel.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+      panel.classList.add('show');
+    }
+
+    async function runKYC() {
+      const btn = document.getElementById('start-btn');
+      btn.disabled = true;
+
+      try {
+        console.log('[KYC] Starting KYC verification flow...');
+
+        // Step 0: Request camera with constraints
+        setStep(0, 'active');
+        console.log('[KYC] Step 0: Requesting camera with constraints {video: {width: 1920, height: 1080, facingMode: "user", frameRate: 30}}');
+        const constraints = { video: { width: 1920, height: 1080, facingMode: 'user', frameRate: 30 } };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const track = stream.getVideoTracks()[0];
+        setStep(0, 'done');
+
+        // Step 1: Display and log track metadata
+        setStep(1, 'active');
+        console.log('[KYC] Step 1: Logging track metadata...');
+        const caps = track.getCapabilities();
+        const settings = track.getSettings();
+        const trackConstraints = track.getConstraints();
+
+        document.getElementById('meta-label').textContent = `"${track.label}"`;
+        document.getElementById('meta-caps').textContent = JSON.stringify({
+          width: caps.width, height: caps.height,
+          frameRate: caps.frameRate, facingMode: caps.facingMode,
+          deviceId: caps.deviceId
+        });
+        document.getElementById('meta-settings').textContent = JSON.stringify(settings);
+        document.getElementById('meta-constraints').textContent = JSON.stringify(trackConstraints);
+
+        console.log('[KYC] Track label:', track.label);
+        console.log('[KYC] Capabilities:', JSON.stringify(caps));
+        console.log('[KYC] Settings:', JSON.stringify(settings));
+
+        // Display live stream for 5 seconds
+        const video = document.getElementById('kyc-video');
+        video.srcObject = stream;
+        await video.play();
+
+        try {
+          await waitForVideoFrame(video);
+        } catch (e) {
+          console.warn('[KYC] Video frame wait issue:', e.message);
+        }
+
+        console.log('[KYC] Displaying live stream for 5 seconds...');
+        setStep(1, 'done');
+
+        // Step 2: Wait 5 seconds
+        setStep(2, 'active');
+        await new Promise(r => setTimeout(r, 5000));
+        console.log('[KYC] 5 seconds elapsed');
+        setStep(2, 'done');
+
+        // Step 3: Take photo via ImageCapture
+        setStep(3, 'active');
+        console.log('[KYC] Step 3: Taking photo via ImageCapture...');
+        const capture = new ImageCapture(track);
+        const blob = await capture.takePhoto();
+        console.log('[KYC] Photo taken:', blob.size, 'bytes, type:', blob.type);
+        const photoEl = document.getElementById('kyc-photo');
+        photoEl.src = URL.createObjectURL(blob);
+
+        // Validate photo is non-empty
+        if (blob.size < 100) {
+          throw new Error(`Photo blob too small: ${blob.size} bytes`);
+        }
+        setStep(3, 'done');
+
+        // Step 4: applyConstraints mid-stream
+        setStep(4, 'active');
+        console.log('[KYC] Step 4: Changing resolution mid-stream via applyConstraints({width: 1280, height: 720})...');
+        await track.applyConstraints({ width: 1280, height: 720 });
+        const newSettings = track.getSettings();
+        console.log('[KYC] New settings after applyConstraints:', JSON.stringify(newSettings));
+
+        // Update metadata display
+        document.getElementById('meta-settings').textContent = JSON.stringify(newSettings);
+        setStep(4, 'done');
+
+        // Step 5: Take second photo
+        setStep(5, 'active');
+        console.log('[KYC] Step 5: Taking second photo after constraint change...');
+        await new Promise(r => setTimeout(r, 1000)); // Let new settings apply
+        const blob2 = await capture.takePhoto();
+        console.log('[KYC] Second photo taken:', blob2.size, 'bytes, type:', blob2.type);
+
+        if (blob2.size < 100) {
+          throw new Error(`Second photo blob too small: ${blob2.size} bytes`);
+        }
+
+        // Display second photo (replaces first)
+        photoEl.src = URL.createObjectURL(blob2);
+
+        // Basic image validity check: blob size is reasonable
+        const validSize = blob2.size > 500;
+        setStep(5, 'done');
+
+        // Final verdict
+        const verdict = document.getElementById('verdict');
+        verdict.className = `verdict ${validSize ? 'complete' : 'failed'}`;
+        verdict.textContent = validSize
+          ? '✅ Verification Complete — all checks passed'
+          : '❌ Verification Failed — image validity check did not pass';
+
+        console.log(`[KYC] KYC flow complete. Verdict: ${validSize ? 'PASS' : 'FAIL'}`);
+
+        // Cleanup
+        track.stop();
+
+      } catch (e) {
+        console.error('[KYC] ERROR:', e.name, e.message);
+        showError(`${e.name}: ${e.message}`);
+        const verdict = document.getElementById('verdict');
+        verdict.className = 'verdict failed';
+        verdict.textContent = `❌ Verification Failed — ${e.name}: ${e.message}`;
+
+        // Mark any active steps as failed
+        for (let i = 0; i < steps; i++) {
+          if (stepDots[i].classList.contains('active')) {
+            stepDots[i].className = 'step-dot fail';
+          }
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    console.log('[KYC] KYC simulation page loaded. Ready.');
+  </script>
+</body>
+</html>

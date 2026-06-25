@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Basic Camera Test — Interceptor Verification</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 40px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    .subtitle { color: #606080; font-size: 13px; margin-bottom: 24px; }
+    .test-grid { display: grid; gap: 16px; }
+    .card {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; color: #a0a0b8; margin-bottom: 12px; }
+    video, img { max-width: 100%; border-radius: 4px; border: 1px solid #2a2a4a; }
+    .result { font-size: 12px; padding: 8px 12px; border-radius: 4px; margin-top: 8px; font-family: 'SF Mono', 'Fira Code', monospace; }
+    .pass { background: rgba(0,200,83,0.15); color: #00c853; border: 1px solid rgba(0,200,83,0.3); }
+    .fail { background: rgba(255,23,68,0.15); color: #ff1744; border: 1px solid rgba(255,23,68,0.3); }
+    .info { background: rgba(100,100,160,0.15); color: #8080c0; border: 1px solid rgba(100,100,160,0.3); }
+    .log-panel {
+      background: #0a0a1e;
+      border: 1px solid #2a2a4a;
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+      color: #8080c0;
+    }
+    .btn {
+      padding: 8px 20px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn:hover { background: #ff6b81; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h1>Basic Camera Test</h1>
+  <p class="subtitle">Verifying getUserMedia interception returns pre-recorded video, not real webcam</p>
+
+  <div class="test-grid">
+    <!-- Test 1: getUserMedia Interception -->
+    <div class="card">
+      <h2>Test 1: getUserMedia Stream</h2>
+      <button class="btn" id="test1-btn" onclick="runTest1()">Run Test</button>
+      <div id="test1-video-area"></div>
+      <div id="test1-result"></div>
+    </div>
+
+    <!-- Test 2: MediaStreamTrack Capabilities -->
+    <div class="card">
+      <h2>Test 2: Track Capabilities & Spoofing</h2>
+      <button class="btn" id="test2-btn" onclick="runTest2()" disabled>Run Test</button>
+      <div id="test2-result"></div>
+    </div>
+
+    <!-- Test 3: applyConstraints & Clone -->
+    <div class="card">
+      <h2>Test 3: applyConstraints & clone()</h2>
+      <button class="btn" id="test3-btn" onclick="runTest3()" disabled>Run Test</button>
+      <div id="test3-result"></div>
+    </div>
+
+    <!-- Test 4: ImageCapture -->
+    <div class="card">
+      <h2>Test 4: ImageCapture (takePhoto + grabFrame)</h2>
+      <button class="btn" id="test4-btn" onclick="runTest4()" disabled>Run Test</button>
+      <div id="test4-result"></div>
+      <div id="test4-img-area" style="display:flex;gap:8px;margin-top:8px;"></div>
+    </div>
+
+    <!-- Console Log -->
+    <div class="card">
+      <h2>Console Log</h2>
+      <div class="log-panel" id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    // ── Shared state ──────────────────────────────────────────────────
+    let activeStream = null;
+    let activeTrack = null;
+
+    // ── Logger ────────────────────────────────────────────────────────
+    const logEl = document.getElementById('log');
+    function log(msg) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += `[${time}] ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(`[TEST] ${msg}`);
+    }
+
+    // ── Result helpers ────────────────────────────────────────────────
+    function showResult(elementId, pass, text) {
+      const el = document.getElementById(elementId);
+      el.innerHTML = `<div class="result ${pass ? 'pass' : 'fail'}">${pass ? '✅ PASS' : '❌ FAIL'}: ${text}</div>`;
+    }
+
+    function showInfo(elementId, text) {
+      const el = document.getElementById(elementId);
+      el.innerHTML = `<div class="result info">ℹ️ ${text}</div>`;
+    }
+
+    // ── Test 1: getUserMedia Interception ─────────────────────────────
+    async function runTest1() {
+      log('=== Test 1: getUserMedia Interception ===');
+      document.getElementById('test1-btn').disabled = true;
+
+      try {
+        const startTime = Date.now();
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const elapsed = Date.now() - startTime;
+
+        activeStream = stream;
+        activeTrack = stream.getVideoTracks()[0];
+
+        log(`Stream received in ${elapsed}ms`);
+        log(`Video tracks: ${stream.getVideoTracks().length}`);
+        log(`Audio tracks: ${stream.getAudioTracks().length}`);
+        log(`Track label: "${activeTrack.label}"`);
+        log(`Track readyState: ${activeTrack.readyState}`);
+
+        // Display video
+        const video = document.createElement('video');
+        video.id = 'test-output';
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = true;
+        video.style.maxWidth = '320px';
+        document.getElementById('test1-video-area').appendChild(video);
+
+        await video.play();
+        log(`Video playback started, dimensions: ${video.videoWidth}x${video.videoHeight}`);
+
+        // Check track label is spoofed
+        const labelCheck = activeTrack.label && 
+          activeTrack.label !== '' && 
+          !activeTrack.label.toLowerCase().includes('virtual') &&
+          !activeTrack.label.toLowerCase().includes('obs') &&
+          !activeTrack.label.toLowerCase().includes('manycam');
+
+        if (labelCheck) {
+          showResult('test1-result', true, `Track label: "${activeTrack.label}" (unsuspicious)`);
+        } else {
+          showResult('test1-result', false, `Track label: "${activeTrack.label}" (suspicious or empty)`);
+        }
+
+        // Enable subsequent tests
+        document.getElementById('test2-btn').disabled = false;
+        document.getElementById('test3-btn').disabled = false;
+        document.getElementById('test4-btn').disabled = false;
+
+        log('Test 1 complete');
+      } catch (e) {
+        log(`ERROR: ${e.name}: ${e.message}`);
+        showResult('test1-result', false, `${e.name}: ${e.message}`);
+      }
+    }
+
+    // ── Test 2: Track Capabilities ────────────────────────────────────
+    async function runTest2() {
+      log('=== Test 2: Track Capabilities & Spoofing ===');
+
+      if (!activeTrack) {
+        showResult('test2-result', false, 'No active track — run Test 1 first');
+        return;
+      }
+
+      try {
+        const caps = activeTrack.getCapabilities();
+        const settings = activeTrack.getSettings();
+        const constraints = activeTrack.getConstraints();
+
+        log(`Capabilities keys: ${Object.keys(caps).join(', ')}`);
+        log(`Has width: ${'width' in caps}, Has height: ${'height' in caps}, Has frameRate: ${'frameRate' in caps}, Has facingMode: ${'facingMode' in caps}, Has deviceId: ${'deviceId' in caps}`);
+        log(`Settings: ${JSON.stringify(settings)}`);
+        log(`Constraints: ${JSON.stringify(constraints)}`);
+
+        const checks = [
+          { label: 'width in caps', pass: 'width' in caps },
+          { label: 'height in caps', pass: 'height' in caps },
+          { label: 'frameRate in caps', pass: 'frameRate' in caps },
+          { label: 'facingMode in caps', pass: 'facingMode' in caps },
+          { label: 'deviceId in caps', pass: 'deviceId' in caps },
+          { label: 'settings has width', pass: settings.width > 0 },
+          { label: 'settings has height', pass: settings.height > 0 },
+        ];
+
+        const allPass = checks.every(c => c.pass);
+        const details = checks.map(c => `${c.label}: ${c.pass ? '✓' : '✗'}`).join(', ');
+
+        showResult('test2-result', allPass, details);
+        log('Test 2 complete');
+      } catch (e) {
+        log(`ERROR: ${e.name}: ${e.message}`);
+        showResult('test2-result', false, `${e.name}: ${e.message}`);
+      }
+    }
+
+    // ── Test 3: applyConstraints & Clone ──────────────────────────────
+    async function runTest3() {
+      log('=== Test 3: applyConstraints & clone() ===');
+
+      if (!activeTrack) {
+        showResult('test3-result', false, 'No active track — run Test 1 first');
+        return;
+      }
+
+      try {
+        // Test applyConstraints
+        log('Calling applyConstraints({width: 1280, height: 720})...');
+        await activeTrack.applyConstraints({ width: 1280, height: 720 });
+        const settings1 = activeTrack.getSettings();
+        log(`After applyConstraints, settings: ${JSON.stringify(settings1)}`);
+
+        // Test clone
+        log('Calling track.clone()...');
+        const cloned = activeTrack.clone();
+        const capsClone = cloned.getCapabilities();
+        const capsOrig = activeTrack.getCapabilities();
+
+        const cloneWidthMatch = capsClone.width && capsOrig.width;
+        const cloneHeightMatch = capsClone.height && capsOrig.height;
+        const cloneDeviceIdMatch = capsClone.deviceId === capsOrig.deviceId;
+
+        log(`Clone caps width: ${JSON.stringify(capsClone.width)}, Original: ${JSON.stringify(capsOrig.width)}`);
+        log(`Clone deviceId: ${capsClone.deviceId}, Original: ${capsOrig.deviceId}`);
+
+        cloned.stop(); // cleanup
+
+        const allPass = cloneWidthMatch && cloneHeightMatch && cloneDeviceIdMatch;
+        showResult('test3-result', allPass,
+          `applyConstraints resolved: ✓, clone caps match: ${allPass ? '✓' : '✗'}`);
+        log('Test 3 complete');
+      } catch (e) {
+        log(`ERROR: ${e.name}: ${e.message}`);
+        showResult('test3-result', false, `${e.name}: ${e.message}`);
+      }
+    }
+
+    // ── Test 4: ImageCapture ──────────────────────────────────────────
+    async function runTest4() {
+      log('=== Test 4: ImageCapture (takePhoto + grabFrame) ===');
+
+      if (!activeTrack) {
+        showResult('test4-result', false, 'No active track — run Test 1 first');
+        return;
+      }
+
+      try {
+        // Wait a moment for video to have frames
+        await new Promise(r => setTimeout(r, 500));
+
+        // Test takePhoto
+        const capture = new ImageCapture(activeTrack);
+        log('Calling ImageCapture.takePhoto()...');
+        const blob = await capture.takePhoto();
+        log(`takePhoto blob: ${blob.size} bytes, type: ${blob.type}`);
+
+        // Display photo
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(blob);
+        img.style.maxWidth = '280px';
+        img.style.borderRadius = '4px';
+        img.style.border = '1px solid #2a2a4a';
+        document.getElementById('test4-img-area').appendChild(img);
+
+        // Test grabFrame
+        log('Calling ImageCapture.grabFrame()...');
+        const bitmap = await capture.grabFrame();
+        log(`grabFrame bitmap: ${bitmap.width}x${bitmap.height}`);
+
+        const photoPass = blob.size > 0 && blob.type === 'image/jpeg';
+        const grabPass = bitmap.width > 0 && bitmap.height > 0;
+
+        const allPass = photoPass && grabPass;
+        showResult('test4-result', allPass,
+          `takePhoto: ${photoPass ? '✓' : '✗'} (${blob.size} bytes), grabFrame: ${grabPass ? '✓' : '✗'} (${bitmap.width}x${bitmap.height})`);
+        log('Test 4 complete');
+      } catch (e) {
+        log(`ERROR: ${e.name}: ${e.message}`);
+        showResult('test4-result', false, `${e.name}: ${e.message}`);
+      }
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────
+    log('Basic camera test page loaded.');
+    log(`navigator.mediaDevices.getUserMedia is ${typeof navigator.mediaDevices.getUserMedia}`);
+  </script>
+</body>
+</html>

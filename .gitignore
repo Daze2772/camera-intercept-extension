@@ -1,0 +1,5 @@
+node_modules/
+.puppeteer-profile/
+test-output/
+*.png
+.DS_Store

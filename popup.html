@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Camera Interceptor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="title">Camera Interceptor</h1>
+      <span id="version-badge" class="badge">v1.0</span>
+    </header>
+
+    <!-- Toggle -->
+    <section class="section">
+      <div class="toggle-row">
+        <label class="toggle-label" for="intercept-toggle">Interception</label>
+        <label class="switch">
+          <input type="checkbox" id="intercept-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p id="status-text" class="status-text">Passthrough Mode — real camera active</p>
+    </section>
+
+    <!-- Video Source -->
+    <section class="section">
+      <h2 class="section-title">Video Source</h2>
+      <div class="profile-area">
+        <select id="profile-select" class="select">
+          <option value="">— No profile loaded —</option>
+        </select>
+        <div class="profile-actions">
+          <button id="load-video-btn" class="btn btn-primary">Load Video</button>
+          <button id="rename-profile-btn" class="btn btn-small" title="Rename">✎</button>
+          <button id="delete-profile-btn" class="btn btn-small btn-danger" title="Delete">✕</button>
+        </div>
+      </div>
+
+      <!-- Hidden file input -->
+      <input type="file" id="file-input" accept=".mp4,.webm,.mov" style="display:none;">
+
+      <!-- Video metadata display -->
+      <div id="video-meta" class="meta-panel hidden">
+        <div class="meta-row"><span class="meta-key">Resolution:</span><span class="meta-value" id="meta-resolution">—</span></div>
+        <div class="meta-row"><span class="meta-key">Frame Rate:</span><span class="meta-value" id="meta-framerate">—</span></div>
+        <div class="meta-row"><span class="meta-key">Duration:</span><span class="meta-value" id="meta-duration">—</span></div>
+        <div class="meta-row"><span class="meta-key">Codec:</span><span class="meta-value" id="meta-codec">—</span></div>
+        <div class="meta-row"><span class="meta-key">Size:</span><span class="meta-value" id="meta-size">—</span></div>
+      </div>
+    </section>
+
+    <!-- Live Preview -->
+    <section class="section">
+      <h2 class="section-title">Live Preview</h2>
+      <div class="preview-container">
+        <video id="preview-video" class="preview-video" muted playsinline loop></video>
+        <p id="no-preview-text" class="muted">No video loaded</p>
+      </div>
+    </section>
+
+    <!-- Status Panel -->
+    <section class="section">
+      <h2 class="section-title">Status</h2>
+      <div class="status-panel">
+        <div class="status-row">
+          <span class="status-label">Active interceptions:</span>
+          <span id="active-count" class="status-value">0</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Current page:</span>
+          <span id="current-url" class="status-value text-ellipsis">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Log Panel -->
+    <section class="section">
+      <div class="log-header" id="log-toggle">
+        <h2 class="section-title">Event Log</h2>
+        <span id="log-arrow" class="arrow">▼</span>
+      </div>
+      <div id="log-panel" class="log-panel">
+        <div id="log-entries" class="log-entries">
+          <p class="muted">No events yet</p>
+        </div>
+        <button id="clear-logs-btn" class="btn btn-small btn-secondary">Clear</button>
+      </div>
+    </section>
+
+    <!-- Actions -->
+    <section class="section actions-section">
+      <button id="test-page-btn" class="btn btn-primary btn-full">Open Test Page</button>
+    </section>
+
+    <footer class="footer">
+      <span>ENI ♡ LO</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

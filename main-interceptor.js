@@ -228,12 +228,20 @@
   }
 
   // ── Bridge: listen for commands from isolated world ──────────────────
-  document.addEventListener('__camCommand', function(e) {
+  // CustomEvent on document (same-frame, for non-iframe pages like webcamtests.com)
+  document.addEventListener('__camCommand', handleCommand);
+
+  // postMessage on window (cross-frame, for iframes like Veriff)
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.source !== 'cam-intercept-bridge') return;
+    handleCommand({ detail: e.data });
+  });
+
+  function handleCommand(e) {
     var d = e.detail;
     if (!d) return;
 
     if (d.action === 'enable') {
-      // Guard: only act if state actually changed
       if (_lastEnabled && _lastVideoData === d.videoData) return;
       _lastEnabled = true;
       _lastVideoData = d.videoData || null;
@@ -257,7 +265,7 @@
       if (_videoEl) { _videoEl.pause(); _videoEl.remove(); _videoEl = null; }
       console.log('[CamIntercept MAIN] Disabled');
     }
-  });
+  }
 
   console.log('[CamIntercept MAIN] Patched getUserMedia + enumerateDevices + ImageCapture. Waiting for bridge.');
 })();

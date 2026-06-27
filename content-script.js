@@ -14,7 +14,7 @@
     document.documentElement.appendChild(banner);
   } catch(e) {}
 
-  // ── Bridge: sync chrome.storage → main world via CustomEvent ────────
+  // ── Bridge: sync chrome.storage → main world via postMessage + CustomEvent ─
   function syncToMainWorld() {
     chrome.storage.local.get(
       ['interceptionEnabled', 'activeProfileId', 'profiles'],
@@ -27,27 +27,34 @@
           profile = profiles.find(function(p) { return p.id === activeId; });
         }
 
+        var detail;
         if (enabled && profile && profile.videoData) {
-          document.dispatchEvent(new CustomEvent('__camCommand', {
-            detail: {
-              action: 'enable',
-              videoData: profile.videoData,
-              videoMime: profile.videoMime || 'video/webm',
-              videoMeta: profile.videoMeta || null
-            }
-          }));
+          detail = {
+            action: 'enable',
+            videoData: profile.videoData,
+            videoMime: profile.videoMime || 'video/webm',
+            videoMeta: profile.videoMeta || null
+          };
           console.log('[CamIntercept BRIDGE] Enabled, video:', (profile.videoData.length / 1024).toFixed(1), 'KB base64');
         } else if (enabled) {
-          document.dispatchEvent(new CustomEvent('__camCommand', {
-            detail: { action: 'enable', videoData: null }
-          }));
+          detail = { action: 'enable', videoData: null };
           console.log('[CamIntercept BRIDGE] Enabled, NO VIDEO loaded');
         } else {
-          document.dispatchEvent(new CustomEvent('__camCommand', {
-            detail: { action: 'disable' }
-          }));
+          detail = { action: 'disable' };
           console.log('[CamIntercept BRIDGE] Disabled');
         }
+
+        // 1. CustomEvent for same-frame main-world interceptor
+        document.dispatchEvent(new CustomEvent('__camCommand', { detail: detail }));
+
+        // 2. postMessage to reach cross-origin iframes (Veriff, etc.)
+        window.postMessage({
+          source: 'cam-intercept-bridge',
+          action: detail.action,
+          videoData: detail.videoData,
+          videoMime: detail.videoMime,
+          videoMeta: detail.videoMeta
+        }, '*');
       }
     );
   }

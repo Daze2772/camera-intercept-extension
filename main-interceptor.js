@@ -110,7 +110,8 @@
   function getVideo() {
     if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl.remove(); _videoEl = null; }
     var v = document.createElement('video');
-    v.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0.01;pointer-events:none;';
+    // Must be visible (opacity > 0, in viewport) for Chrome to render frames into captureStream
+    v.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;opacity:1;pointer-events:none;z-index:-1;';
     v.setAttribute('playsinline', '');
     v.setAttribute('autoplay', '');
     v.setAttribute('muted', '');
@@ -203,15 +204,24 @@
     if (_activePromise) { try { return await _activePromise; } catch(e) {} }
     console.log('[CamIntercept MAIN] Starting interception...');
     _activePromise = (async function() {
-      var v = getVideo(null, null); // create element, don't set src yet
+      var v = getVideo();
       await loadVideo(v, STATE.videoData, STATE.videoMime);
       console.log('[CamIntercept MAIN] Video loaded, readyState:', v.readyState, 'paused:', v.paused);
 
-      // Start playing BEFORE capturing stream (ensures frames flow)
+      // Force Chrome to keep rendering frames by watching currentTime
+      var _lastTime = -1;
+      function tick() {
+        if (!v.paused && v.currentTime !== _lastTime) {
+          _lastTime = v.currentTime;
+        }
+        if (!v.paused) requestAnimationFrame(tick);
+      }
+
       v.loop = true;
       try {
         await v.play();
-        console.log('[CamIntercept MAIN] Video playing. paused:', v.paused);
+        console.log('[CamIntercept MAIN] Video playing. paused:', v.paused, 'currentTime:', v.currentTime);
+        requestAnimationFrame(tick);
       } catch (e) {
         console.error('[CamIntercept MAIN] Video play failed:', e.message);
         throw e;

@@ -231,10 +231,17 @@
         throw e;
       }
 
-      // Canvas-based captureStream
+      // Canvas-based captureStream — downscale large videos for performance
+      var MAX_DIM = 1280;
+      var vw = v.videoWidth || 640;
+      var vh = v.videoHeight || 480;
+      var scale = 1;
+      if (vw > MAX_DIM || vh > MAX_DIM) {
+        scale = MAX_DIM / Math.max(vw, vh);
+      }
       var canvas = document.createElement('canvas');
-      canvas.width = v.videoWidth || 640;
-      canvas.height = v.videoHeight || 480;
+      canvas.width = Math.round(vw * scale);
+      canvas.height = Math.round(vh * scale);
       var ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       _frameCount = 0;
@@ -261,7 +268,9 @@
         requestAnimationFrame(drawNextFrame);
       }
 
-      _cachedStream = canvas.captureStream(30);
+      // Use lower capture FPS for larger canvases to reduce encoding overhead
+      var captureFps = (canvas.width * canvas.height > 1280 * 720) ? 15 : 30;
+      _cachedStream = canvas.captureStream(captureFps);
       var tracks = _cachedStream.getVideoTracks();
       console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
 

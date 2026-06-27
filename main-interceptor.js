@@ -18,11 +18,11 @@
   });
 
   // ── State ────────────────────────────────────────────────────────────
+  var _readyResolve = null;
   var STATE = {
     enabled: false,
-    readyResolve: null,
-    readyPromise: new Promise(function(r) { STATE.readyResolve = r; }),
-    activeInterception: null  // pending stream request
+    readyPromise: new Promise(function(r) { _readyResolve = r; }),
+    activeInterception: null
   };
 
   var _lastEnabled = false;
@@ -124,7 +124,7 @@
       if (_lastEnabled) return;
       _lastEnabled = true;
       STATE.enabled = true;
-      if (STATE.readyResolve) { STATE.readyResolve(); STATE.readyResolve = null; }
+      if (_readyResolve) { _readyResolve(); _readyResolve = null; }
       console.log('[CamIntercept MAIN] Enabled');
     } else if (d.action === 'disable') {
       if (!_lastEnabled) return;
@@ -141,7 +141,7 @@
       if (_lastEnabled) return;
       _lastEnabled = true;
       STATE.enabled = true;
-      if (STATE.readyResolve) { STATE.readyResolve(); STATE.readyResolve = null; }
+      if (_readyResolve) { _readyResolve(); _readyResolve = null; }
     } else if (e.data.action === 'disable') {
       if (!_lastEnabled) return;
       _lastEnabled = false;

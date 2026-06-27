@@ -107,17 +107,19 @@
     console.log('[CamIntercept BRIDGE] Building stream...');
 
     // Clean up previous
-    if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
+    if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl.remove(); _videoEl = null; }
     _cachedStream = null;
     _cachedCanvas = null;
 
-    // Create detached video (bypasses page CSP)
+    // Create tiny visible video in DOM (autoplay requires DOM attachment)
     var v = document.createElement('video');
+    v.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;opacity:1;pointer-events:none;z-index:-1;';
     v.setAttribute('playsinline', '');
     v.setAttribute('autoplay', '');
     v.setAttribute('muted', '');
     v.preload = 'auto';
     v.crossOrigin = 'anonymous';
+    document.body.appendChild(v);
     _videoEl = v;
 
     // Decode base64 → Blob (async, chunked)
@@ -282,7 +284,7 @@
           _cachedStream = null;
           _cachedCanvas = null;
           _streamPromise = null;
-          if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
+          if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl.remove(); _videoEl = null; }
           console.log('[CamIntercept BRIDGE] Disabled');
         }
       }

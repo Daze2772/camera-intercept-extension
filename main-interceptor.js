@@ -71,14 +71,18 @@
     v.setAttribute('muted', '');
     v.preload = 'auto';
     v.crossOrigin = 'anonymous';
-    // Use data URL + fetch to decode base64 asynchronously (avoids UI freeze)
-    v.src = 'data:' + (mime || 'video/webm') + ';base64,' + base64;
     document.body.appendChild(v);
     _videoEl = v;
     return v;
   }
 
-  function waitForVideo(v) {
+  async function loadVideo(v, base64, mime) {
+    // Use fetch() to convert data URL to Blob asynchronously (no UI freeze)
+    // Then create blob: URL which passes CSP media-src restrictions
+    var dataUrl = 'data:' + (mime || 'video/webm') + ';base64,' + base64;
+    var response = await fetch(dataUrl);
+    var blob = await response.blob();
+    v.src = URL.createObjectURL(blob);
     return new Promise(function(resolve, reject) {
       if (v.readyState >= 3) { resolve(); return; }
       v.addEventListener('canplay', function() { resolve(); }, { once: true });
@@ -157,15 +161,15 @@
     if (_activePromise) { try { return await _activePromise; } catch(e) {} }
     console.log('[CamIntercept MAIN] Starting interception...');
     _activePromise = (async function() {
-      var v = getVideo(STATE.videoData, STATE.videoMime);
-      await waitForVideo(v);
-      console.log('[CamIntercept MAIN] Video ready, capturing stream. readyState:', v.readyState, 'paused:', v.paused);
+      var v = getVideo(null, null); // create element, don't set src yet
+      await loadVideo(v, STATE.videoData, STATE.videoMime);
+      console.log('[CamIntercept MAIN] Video loaded, readyState:', v.readyState, 'paused:', v.paused);
 
       // Start playing BEFORE capturing stream (ensures frames flow)
       v.loop = true;
       try {
         await v.play();
-        console.log('[CamIntercept MAIN] Video playing. paused:', v.paused, 'currentTime:', v.currentTime);
+        console.log('[CamIntercept MAIN] Video playing. paused:', v.paused);
       } catch (e) {
         console.error('[CamIntercept MAIN] Video play failed:', e.message);
         throw e;

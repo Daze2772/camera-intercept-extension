@@ -109,16 +109,15 @@
   }
 
   function getVideo() {
-    if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl.remove(); _videoEl = null; }
+    if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
     var v = document.createElement('video');
-    // Must be visible (opacity > 0, in viewport) for Chrome to render frames into captureStream
-    v.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;opacity:1;pointer-events:none;z-index:-1;';
+    // Detached from DOM — bypasses page CSP for media-src
+    // captureStream/drawImage/requestVideoFrameCallback all work on detached elements
     v.setAttribute('playsinline', '');
     v.setAttribute('autoplay', '');
     v.setAttribute('muted', '');
     v.preload = 'auto';
     v.crossOrigin = 'anonymous';
-    document.body.appendChild(v);
     _videoEl = v;
     return v;
   }
@@ -367,7 +366,9 @@
       _lastVideoData = null;
 
       STATE.enabled = false;
-      if (_videoEl) { _videoEl.pause(); _videoEl.remove(); _videoEl = null; }
+      _cachedStream = null;
+      _cachedCanvas = null;
+      if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
       console.log('[CamIntercept MAIN] Disabled');
     }
   }

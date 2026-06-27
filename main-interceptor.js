@@ -199,9 +199,22 @@
 
   // ── Core interception ────────────────────────────────────────────────
   var _activePromise = null;
+  var _cachedStream = null;   // Reuse across multiple getUserMedia calls
+  var _cachedCanvas = null;
+  var _frameCount = 0;
 
   async function doIntercept() {
-    if (_activePromise) { try { return await _activePromise; } catch(e) {} }
+    // If a previous interception is still in progress, wait for it
+    if (_activePromise) {
+      try { return await _activePromise; } catch(e) {}
+    }
+
+    // If we already have a live stream, return it directly (Sumsub calls GUM repeatedly)
+    if (_cachedStream && _cachedStream.active && _cachedStream.getVideoTracks().length > 0) {
+      console.log('[CamIntercept MAIN] Reusing cached stream. Frames:', _frameCount);
+      return _cachedStream;
+    }
+
     console.log('[CamIntercept MAIN] Starting interception...');
     _activePromise = (async function() {
       var v = getVideo();
@@ -217,36 +230,47 @@
         throw e;
       }
 
-      // Canvas-based captureStream — more reliable than video.captureStream()
-      // Chrome reliably pushes canvas frames into the stream regardless of visibility
+      // Canvas-based captureStream
       var canvas = document.createElement('canvas');
       canvas.width = v.videoWidth || 640;
       canvas.height = v.videoHeight || 480;
-      // Tell Chrome we'll read pixels frequently (avoids GPU readback warnings)
       var ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      // Draw every frame, keep track for debugging
-      var _frameCount = 0;
-      function drawFrame() {
+      _frameCount = 0;
+      _cachedCanvas = canvas;
+
+      // Use requestVideoFrameCallback for frame-perfect sync with video playback
+      function drawNextFrame() {
         if (!v.paused && v.readyState >= 2) {
           ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
           _frameCount++;
         }
-        if (!v.paused) requestAnimationFrame(drawFrame);
+        if (!v.paused) {
+          if (v.requestVideoFrameCallback) {
+            v.requestVideoFrameCallback(drawNextFrame);
+          } else {
+            requestAnimationFrame(drawNextFrame);
+          }
+        }
       }
-      requestAnimationFrame(drawFrame);
 
-      var stream = canvas.captureStream(30);
-      var tracks = stream.getVideoTracks();
+      if (v.requestVideoFrameCallback) {
+        v.requestVideoFrameCallback(drawNextFrame);
+      } else {
+        requestAnimationFrame(drawNextFrame);
+      }
+
+      _cachedStream = canvas.captureStream(30);
+      var tracks = _cachedStream.getVideoTracks();
       console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
 
-      // Verify frames are flowing after a short delay
+      // Log frame count after 2 seconds
       setTimeout(function() {
         console.log('[CamIntercept MAIN] Frames drawn so far:', _frameCount);
       }, 2000);
 
       for (var i = 0; i < tracks.length; i++) wrapTrack(tracks[i], STATE.videoMeta);
-      return stream;
+      return _cachedStream;
     })();
     try { return await _activePromise; } finally { _activePromise = null; }
   }

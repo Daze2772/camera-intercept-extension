@@ -23,10 +23,11 @@
   const _origTakePhoto = (typeof ImageCapture !== 'undefined') ? ImageCapture.prototype.takePhoto : null;
   const _origGrabFrame = (typeof ImageCapture !== 'undefined') ? ImageCapture.prototype.grabFrame : null;
 
-  // 5-second timeout so the page doesn't hang forever if bridge never responds
-  const TIMEOUT_MS = 5000;
-  const timeout = new Promise(function(_, reject) {
-    setTimeout(function() { reject(new Error('cam-intercept-timeout')); }, TIMEOUT_MS);
+  // 15-second timeout so the page doesn't hang forever if bridge never responds
+  // Resolves (doesn't reject) to avoid unhandled rejection noise
+  var TIMEOUT_MS = 15000;
+  var timeoutPromise = new Promise(function(resolve) {
+    setTimeout(function() { resolve('timeout'); }, TIMEOUT_MS);
   });
 
   // ── Spoofed camera ──────────────────────────────────────────────────
@@ -278,7 +279,7 @@
   // ── PATCH: getUserMedia ───────────────────────────────────────────────
   navigator.mediaDevices.getUserMedia = async function(constraints) {
     // Wait for bridge to provide state, or time out
-    try { await Promise.race([STATE.readyPromise, timeout]); } catch(e) {}
+    await Promise.race([STATE.readyPromise, timeoutPromise]);
 
     if (!STATE.enabled || !STATE.videoData) {
       return _origGetUserMedia(constraints);
@@ -293,7 +294,7 @@
 
   // ── PATCH: enumerateDevices ──────────────────────────────────────────
   navigator.mediaDevices.enumerateDevices = async function() {
-    try { await Promise.race([STATE.readyPromise, timeout]); } catch(e) {}
+    await Promise.race([STATE.readyPromise, timeoutPromise]);
     if (!STATE.enabled) return _origEnumerateDevices();
     try {
       var real = await _origEnumerateDevices();

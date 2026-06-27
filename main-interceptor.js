@@ -62,7 +62,52 @@
   // ── Video helpers ────────────────────────────────────────────────────
   var _videoEl = null;
 
-  function getVideo(base64, mime) {
+  // ── Chunked base64 to Blob (avoids CSP and UI freeze) ──────────────
+  function base64ToBlob(base64, mime) {
+    return new Promise(function(resolve) {
+      var CHUNK = 1048576; // 1MB base64 per chunk (multiple of 4)
+      var binaryChunks = [];
+      var total = base64.length;
+      var pos = 0;
+
+      function next() {
+        if (pos >= total) {
+          var totalLen = 0;
+          for (var i = 0; i < binaryChunks.length; i++) totalLen += binaryChunks[i].length;
+          var result = new Uint8Array(totalLen);
+          var off = 0;
+          for (var i = 0; i < binaryChunks.length; i++) {
+            result.set(binaryChunks[i], off);
+            off += binaryChunks[i].length;
+          }
+          resolve(new Blob([result], { type: mime }));
+          return;
+        }
+
+        var end = Math.min(pos + CHUNK, total);
+        var segment = base64.substring(pos, end);
+
+        // Pad last chunk to multiple of 4 for valid base64
+        if (end === total && segment.length % 4 !== 0) {
+          segment += '==='.substring(0, 4 - (segment.length % 4));
+        }
+
+        var binary = atob(segment);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        binaryChunks.push(bytes);
+        pos = end;
+
+        // Yield to browser between chunks — prevents UI freeze
+        setTimeout(next, 0);
+      }
+
+      setTimeout(next, 0);
+    });
+  }
+
+  function getVideo() {
     if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl.remove(); _videoEl = null; }
     var v = document.createElement('video');
     v.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0.01;pointer-events:none;';
@@ -77,11 +122,8 @@
   }
 
   async function loadVideo(v, base64, mime) {
-    // Use fetch() to convert data URL to Blob asynchronously (no UI freeze)
-    // Then create blob: URL which passes CSP media-src restrictions
-    var dataUrl = 'data:' + (mime || 'video/webm') + ';base64,' + base64;
-    var response = await fetch(dataUrl);
-    var blob = await response.blob();
+    // Decode base64 → Blob in chunks (async, no UI freeze, no CSP issues)
+    var blob = await base64ToBlob(base64, mime || 'video/webm');
     v.src = URL.createObjectURL(blob);
     return new Promise(function(resolve, reject) {
       if (v.readyState >= 3) { resolve(); return; }

@@ -1,21 +1,9 @@
 // main-interceptor.js — Runs in MAIN world at document_start via dynamic registration
 // Patches navigator.mediaDevices.getUserMedia, enumerateDevices, ImageCapture
-// Receives commands from isolated-world bridge via CustomEvent on document
+// Delegates stream creation to content-script.js (isolated world, bypasses CSP)
 
 (function() {
   'use strict';
-
-  // Storage bridge — populated by content script via CustomEvent
-  let _readyResolve = null;
-  let _lastEnabled = false;
-  let _lastVideoData = null;
-  const STATE = {
-    enabled: false,
-    videoData: null,
-    videoMime: 'video/webm',
-    videoMeta: null,
-    readyPromise: new Promise(function(r) { _readyResolve = r; })
-  };
 
   // Original references saved before patching
   const _origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -23,35 +11,24 @@
   const _origTakePhoto = (typeof ImageCapture !== 'undefined') ? ImageCapture.prototype.takePhoto : null;
   const _origGrabFrame = (typeof ImageCapture !== 'undefined') ? ImageCapture.prototype.grabFrame : null;
 
-  // 15-second timeout so the page doesn't hang forever if bridge never responds
-  // Resolves (doesn't reject) to avoid unhandled rejection noise
+  // 15-second timeout so the page doesn't hang forever
   var TIMEOUT_MS = 15000;
   var timeoutPromise = new Promise(function(resolve) {
     setTimeout(function() { resolve('timeout'); }, TIMEOUT_MS);
   });
 
+  // ── State ────────────────────────────────────────────────────────────
+  var STATE = {
+    enabled: false,
+    readyResolve: null,
+    readyPromise: new Promise(function(r) { STATE.readyResolve = r; }),
+    activeInterception: null  // pending stream request
+  };
+
+  var _lastEnabled = false;
+
   // ── Spoofed camera ──────────────────────────────────────────────────
   const SPOOF = {
-    capabilities: {
-      width: { min: 320, max: 1920 },
-      height: { min: 240, max: 1080 },
-      frameRate: { min: 1, max: 30 },
-      facingMode: ['user'],
-      resizeMode: ['none', 'crop-and-scale'],
-      aspectRatio: { min: 0.5, max: 2.0 },
-      deviceId: 'default-camera-interceptor',
-      groupId: 'default-group-interceptor'
-    },
-    settings: function(meta) {
-      return {
-        width: (meta && meta.width) || 1280,
-        height: (meta && meta.height) || 720,
-        frameRate: (meta && meta.frameRate) || 30,
-        deviceId: 'default-camera-interceptor',
-        facingMode: 'user',
-        aspectRatio: ((meta && meta.width) || 1280) / ((meta && meta.height) || 720)
-      };
-    },
     device: {
       deviceId: 'default-camera-interceptor',
       kind: 'videoinput',
@@ -60,240 +37,54 @@
     }
   };
 
-  // ── Video helpers ────────────────────────────────────────────────────
-  var _videoEl = null;
+  // ── Request stream from content script (isolated world) ──────────────
+  var _requestId = 0;
+  var _pendingRequests = {};
 
-  // ── Chunked base64 to Blob (avoids CSP and UI freeze) ──────────────
-  function base64ToBlob(base64, mime) {
-    return new Promise(function(resolve) {
-      var CHUNK = 1048576; // 1MB base64 per chunk (multiple of 4)
-      var binaryChunks = [];
-      var total = base64.length;
-      var pos = 0;
-
-      function next() {
-        if (pos >= total) {
-          var totalLen = 0;
-          for (var i = 0; i < binaryChunks.length; i++) totalLen += binaryChunks[i].length;
-          var result = new Uint8Array(totalLen);
-          var off = 0;
-          for (var i = 0; i < binaryChunks.length; i++) {
-            result.set(binaryChunks[i], off);
-            off += binaryChunks[i].length;
-          }
-          resolve(new Blob([result], { type: mime }));
-          return;
-        }
-
-        var end = Math.min(pos + CHUNK, total);
-        var segment = base64.substring(pos, end);
-
-        // Pad last chunk to multiple of 4 for valid base64
-        if (end === total && segment.length % 4 !== 0) {
-          segment += '==='.substring(0, 4 - (segment.length % 4));
-        }
-
-        var binary = atob(segment);
-        var bytes = new Uint8Array(binary.length);
-        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-        binaryChunks.push(bytes);
-        pos = end;
-
-        // Yield to browser between chunks — prevents UI freeze
-        setTimeout(next, 0);
-      }
-
-      setTimeout(next, 0);
+  function requestStream() {
+    var id = ++_requestId;
+    var promise = new Promise(function(resolve, reject) {
+      _pendingRequests[id] = { resolve: resolve, reject: reject };
     });
+    document.dispatchEvent(new CustomEvent('__camRequest', { detail: { requestId: id } }));
+    return promise;
   }
 
-  function getVideo() {
-    if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
-    var v = document.createElement('video');
-    // Detached from DOM — bypasses page CSP for media-src
-    // captureStream/drawImage/requestVideoFrameCallback all work on detached elements
-    v.setAttribute('playsinline', '');
-    v.setAttribute('autoplay', '');
-    v.setAttribute('muted', '');
-    v.preload = 'auto';
-    v.crossOrigin = 'anonymous';
-    _videoEl = v;
-    return v;
-  }
+  // ── Listen for stream responses from content script ─────────────────
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== '__camResponse') return;
+    var id = e.data.requestId;
+    var req = _pendingRequests[id];
+    if (!req) return;
+    delete _pendingRequests[id];
 
-  async function loadVideo(v, base64, mime) {
-    // Decode base64 → Blob in chunks (async, no UI freeze, no CSP issues)
-    var blob = await base64ToBlob(base64, mime || 'video/webm');
-    v.src = URL.createObjectURL(blob);
-    return new Promise(function(resolve, reject) {
-      if (v.readyState >= 3) { resolve(); return; }
-      v.addEventListener('canplay', function() { resolve(); }, { once: true });
-      v.addEventListener('error', function(e) { reject(e); }, { once: true });
-      v.load();
-    });
-  }
-
-  // ── Track wrapper ────────────────────────────────────────────────────
-  function wrapTrack(track, meta) {
-    var settings = SPOOF.settings(meta);
-    var origCaps = track.getCapabilities ? track.getCapabilities.bind(track) : null;
-    var origSets = track.getSettings ? track.getSettings.bind(track) : null;
-    var origCons = track.getConstraints ? track.getConstraints.bind(track) : null;
-    var origClone = track.clone ? track.clone.bind(track) : null;
-
-    track.getCapabilities = function() {
-      try {
-        var r = origCaps ? origCaps() : {};
-        var merged = {};
-        var keys = Object.keys(SPOOF.capabilities);
-        for (var i = 0; i < keys.length; i++) merged[keys[i]] = SPOOF.capabilities[keys[i]];
-        return merged;
-      } catch(e) { return SPOOF.capabilities; }
-    };
-
-    track.getSettings = function() {
-      try { var r = origSets ? origSets() : {}; return r; }
-      catch(e) { return settings; }
-    };
-
-    track.getConstraints = function() {
-      try { return origCons ? origCons() : { video: { width: settings.width, height: settings.height } }; }
-      catch(e) { return { video: { width: settings.width, height: settings.height } }; }
-    };
-
-    track.applyConstraints = function() { return Promise.resolve(); };
-
-    track.clone = function() {
-      var c = origClone ? origClone() : track;
-      return wrapTrack(c, meta);
-    };
-
-    try {
-      Object.defineProperty(track, 'label', { get: function() { return 'USB Camera'; }, configurable: true });
-    } catch(e) {}
-
-    return track;
-  }
-
-  // ── Frame capture ────────────────────────────────────────────────────
-  function grabFrame(video, mime, quality) {
-    var c = document.createElement('canvas');
-    c.width = video.videoWidth || 1280;
-    c.height = video.videoHeight || 720;
-    var ctx = c.getContext('2d');
-    ctx.drawImage(video, 0, 0, c.width, c.height);
-    return new Promise(function(resolve) {
-      c.toBlob(function(b) { resolve(b); }, mime, quality);
-    });
-  }
-
-  function grabBitmap(video) {
-    var c = document.createElement('canvas');
-    c.width = video.videoWidth || 1280;
-    c.height = video.videoHeight || 720;
-    var ctx = c.getContext('2d');
-    ctx.drawImage(video, 0, 0, c.width, c.height);
-    return createImageBitmap(c);
-  }
-
-  // ── Core interception ────────────────────────────────────────────────
-  var _activePromise = null;
-  var _cachedStream = null;   // Reuse across multiple getUserMedia calls
-  var _cachedCanvas = null;
-  var _frameCount = 0;
-
-  async function doIntercept() {
-    // If a previous interception is still in progress, wait for it
-    if (_activePromise) {
-      try { return await _activePromise; } catch(e) {}
+    if (e.data.error) {
+      req.reject(new Error(e.data.error));
+    } else if (e.data.stream) {
+      req.resolve(e.data.stream);
+    } else {
+      req.reject(new Error('No stream in response'));
     }
-
-    // If we already have a live stream, return it directly (Sumsub calls GUM repeatedly)
-    if (_cachedStream && _cachedStream.active && _cachedStream.getVideoTracks().length > 0) {
-      console.log('[CamIntercept MAIN] Reusing cached stream. Frames:', _frameCount);
-      return _cachedStream;
-    }
-
-    console.log('[CamIntercept MAIN] Starting interception...');
-    _activePromise = (async function() {
-      var v = getVideo();
-      await loadVideo(v, STATE.videoData, STATE.videoMime);
-      console.log('[CamIntercept MAIN] Video loaded, readyState:', v.readyState, 'paused:', v.paused, 'size:', v.videoWidth + 'x' + v.videoHeight);
-
-      v.loop = true;
-      try {
-        await v.play();
-        console.log('[CamIntercept MAIN] Video playing. paused:', v.paused, 'currentTime:', v.currentTime);
-      } catch (e) {
-        console.error('[CamIntercept MAIN] Video play failed:', e.message);
-        throw e;
-      }
-
-      // Canvas-based captureStream — downscale large videos for performance
-      var MAX_DIM = 1280;
-      var vw = v.videoWidth || 640;
-      var vh = v.videoHeight || 480;
-      var scale = 1;
-      if (vw > MAX_DIM || vh > MAX_DIM) {
-        scale = MAX_DIM / Math.max(vw, vh);
-      }
-      var canvas = document.createElement('canvas');
-      canvas.width = Math.round(vw * scale);
-      canvas.height = Math.round(vh * scale);
-      var ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-      _frameCount = 0;
-      _cachedCanvas = canvas;
-
-      // Use requestVideoFrameCallback for frame-perfect sync with video playback
-      function drawNextFrame() {
-        if (!v.paused && v.readyState >= 2) {
-          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-          _frameCount++;
-        }
-        if (!v.paused) {
-          if (v.requestVideoFrameCallback) {
-            v.requestVideoFrameCallback(drawNextFrame);
-          } else {
-            requestAnimationFrame(drawNextFrame);
-          }
-        }
-      }
-
-      if (v.requestVideoFrameCallback) {
-        v.requestVideoFrameCallback(drawNextFrame);
-      } else {
-        requestAnimationFrame(drawNextFrame);
-      }
-
-      // Use lower capture FPS for larger canvases to reduce encoding overhead
-      var captureFps = (canvas.width * canvas.height > 1280 * 720) ? 15 : 30;
-      _cachedStream = canvas.captureStream(captureFps);
-      var tracks = _cachedStream.getVideoTracks();
-      console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
-
-      // Log frame count after 2 seconds
-      setTimeout(function() {
-        console.log('[CamIntercept MAIN] Frames drawn so far:', _frameCount);
-      }, 2000);
-
-      for (var i = 0; i < tracks.length; i++) wrapTrack(tracks[i], STATE.videoMeta);
-      return _cachedStream;
-    })();
-    try { return await _activePromise; } finally { _activePromise = null; }
-  }
+  });
 
   // ── PATCH: getUserMedia ───────────────────────────────────────────────
   navigator.mediaDevices.getUserMedia = async function(constraints) {
-    // Wait for bridge to provide state, or time out
     await Promise.race([STATE.readyPromise, timeoutPromise]);
 
-    if (!STATE.enabled || !STATE.videoData) {
+    if (!STATE.enabled) {
       return _origGetUserMedia(constraints);
     }
+
     try {
-      return await doIntercept();
+      console.log('[CamIntercept MAIN] Requesting stream from bridge...');
+      var stream = await Promise.race([
+        requestStream(),
+        new Promise(function(_, reject) {
+          setTimeout(function() { reject(new Error('Stream request timed out')); }, 15000);
+        })
+      ]);
+      console.log('[CamIntercept MAIN] Stream received from bridge');
+      return stream;
     } catch(e) {
       console.warn('[CamIntercept MAIN] Intercept failed, fallback:', e.message);
       return _origGetUserMedia(constraints);
@@ -318,60 +109,45 @@
   // ── PATCH: ImageCapture ──────────────────────────────────────────────
   if (_origTakePhoto && _origGrabFrame) {
     ImageCapture.prototype.takePhoto = function() {
-      if (STATE.enabled && _videoEl && _videoEl.readyState >= 2) {
-        return grabFrame(_videoEl, 'image/jpeg', 0.92);
-      }
       return _origTakePhoto.call(this);
     };
     ImageCapture.prototype.grabFrame = function() {
-      if (STATE.enabled && _videoEl && _videoEl.readyState >= 2) {
-        return grabBitmap(_videoEl);
-      }
       return _origGrabFrame.call(this);
     };
   }
 
-  // ── Bridge: listen for commands from isolated world ──────────────────
-  // CustomEvent on document (same-frame, for non-iframe pages like webcamtests.com)
-  document.addEventListener('__camCommand', handleCommand);
-
-  // postMessage on window (cross-frame, for iframes like Veriff)
-  window.addEventListener('message', function(e) {
-    if (!e.data || e.data.source !== 'cam-intercept-bridge') return;
-    handleCommand({ detail: e.data });
-  });
-
-  function handleCommand(e) {
+  // ── Bridge: listen for enable/disable from isolated world ────────────
+  document.addEventListener('__camCommand', function(e) {
     var d = e.detail;
     if (!d) return;
-
     if (d.action === 'enable') {
-      if (_lastEnabled && _lastVideoData === d.videoData) return;
+      if (_lastEnabled) return;
       _lastEnabled = true;
-      _lastVideoData = d.videoData || null;
-
       STATE.enabled = true;
-      STATE.videoData = d.videoData || null;
-      STATE.videoMime = d.videoMime || 'video/webm';
-      STATE.videoMeta = d.videoMeta || null;
-
-      if (_readyResolve) {
-        _readyResolve();
-        _readyResolve = null;
-      }
-      console.log('[CamIntercept MAIN] Enabled. Video:', STATE.videoMeta ? STATE.videoMeta.width + 'x' + STATE.videoMeta.height : 'none');
+      if (STATE.readyResolve) { STATE.readyResolve(); STATE.readyResolve = null; }
+      console.log('[CamIntercept MAIN] Enabled');
     } else if (d.action === 'disable') {
       if (!_lastEnabled) return;
       _lastEnabled = false;
-      _lastVideoData = null;
-
       STATE.enabled = false;
-      _cachedStream = null;
-      _cachedCanvas = null;
-      if (_videoEl) { _videoEl.pause(); _videoEl.removeAttribute('src'); _videoEl = null; }
       console.log('[CamIntercept MAIN] Disabled');
     }
-  }
+  });
 
-  console.log('[CamIntercept MAIN] Patched getUserMedia + enumerateDevices + ImageCapture. Waiting for bridge.');
+  // postMessage fallback
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.source !== 'cam-intercept-bridge') return;
+    if (e.data.action === 'enable') {
+      if (_lastEnabled) return;
+      _lastEnabled = true;
+      STATE.enabled = true;
+      if (STATE.readyResolve) { STATE.readyResolve(); STATE.readyResolve = null; }
+    } else if (e.data.action === 'disable') {
+      if (!_lastEnabled) return;
+      _lastEnabled = false;
+      STATE.enabled = false;
+    }
+  });
+
+  console.log('[CamIntercept MAIN] Patched getUserMedia + enumerateDevices. Waiting for bridge.');
 })();

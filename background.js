@@ -14,14 +14,6 @@ const STORAGE_KEYS = {
 // but calling on every startup ensures it's always registered
 async function registerMainWorldScript() {
   try {
-    // Remove any previous registration first
-    const scripts = await chrome.scripting.getRegisteredContentScripts();
-    for (const s of scripts) {
-      if (s.id === 'main-interceptor') {
-        await chrome.scripting.unregisterContentScripts({ ids: ['main-interceptor'] });
-      }
-    }
-
     await chrome.scripting.registerContentScripts([{
       id: 'main-interceptor',
       js: ['main-interceptor.js'],
@@ -32,7 +24,12 @@ async function registerMainWorldScript() {
     }]);
     console.log('[BG] Main-world interceptor registered');
   } catch (e) {
-    console.error('[BG] Failed to register main-world script:', e.message);
+    // Duplicate ID means already registered — that's fine
+    if (e.message.includes('Duplicate')) {
+      console.log('[BG] Main-world interceptor already registered (OK)');
+    } else {
+      console.error('[BG] Failed to register main-world script:', e.message);
+    }
   }
 }
 

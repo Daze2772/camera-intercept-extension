@@ -206,30 +206,45 @@
     _activePromise = (async function() {
       var v = getVideo();
       await loadVideo(v, STATE.videoData, STATE.videoMime);
-      console.log('[CamIntercept MAIN] Video loaded, readyState:', v.readyState, 'paused:', v.paused);
-
-      // Force Chrome to keep rendering frames by watching currentTime
-      var _lastTime = -1;
-      function tick() {
-        if (!v.paused && v.currentTime !== _lastTime) {
-          _lastTime = v.currentTime;
-        }
-        if (!v.paused) requestAnimationFrame(tick);
-      }
+      console.log('[CamIntercept MAIN] Video loaded, readyState:', v.readyState, 'paused:', v.paused, 'size:', v.videoWidth + 'x' + v.videoHeight);
 
       v.loop = true;
       try {
         await v.play();
         console.log('[CamIntercept MAIN] Video playing. paused:', v.paused, 'currentTime:', v.currentTime);
-        requestAnimationFrame(tick);
       } catch (e) {
         console.error('[CamIntercept MAIN] Video play failed:', e.message);
         throw e;
       }
 
-      var stream = v.captureStream(30);
+      // Canvas-based captureStream — more reliable than video.captureStream()
+      // Chrome reliably pushes canvas frames into the stream regardless of visibility
+      var canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth || 640;
+      canvas.height = v.videoHeight || 480;
+      // Tell Chrome we'll read pixels frequently (avoids GPU readback warnings)
+      var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      // Draw every frame, keep track for debugging
+      var _frameCount = 0;
+      function drawFrame() {
+        if (!v.paused && v.readyState >= 2) {
+          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+          _frameCount++;
+        }
+        if (!v.paused) requestAnimationFrame(drawFrame);
+      }
+      requestAnimationFrame(drawFrame);
+
+      var stream = canvas.captureStream(30);
       var tracks = stream.getVideoTracks();
-      console.log('[CamIntercept MAIN] Stream captured, tracks:', tracks.length);
+      console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
+
+      // Verify frames are flowing after a short delay
+      setTimeout(function() {
+        console.log('[CamIntercept MAIN] Frames drawn so far:', _frameCount);
+      }, 2000);
+
       for (var i = 0; i < tracks.length; i++) wrapTrack(tracks[i], STATE.videoMeta);
       return stream;
     })();

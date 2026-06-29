@@ -30,7 +30,11 @@
     setTimeout(function() { resolve('timeout'); }, TIMEOUT_MS);
   });
 
-  // ── Spoofed camera ──────────────────────────────────────────────────
+  // ── Spoofed camera identity ───────────────────────────────────────
+  // Realistic hardware-style IDs to avoid detection
+  var FAKE_DEVICE_ID = '4e9f8a7b3c2d1e0f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f';
+  var FAKE_GROUP_ID = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2';
+
   const SPOOF = {
     capabilities: {
       width: { min: 320, max: 1920 },
@@ -39,24 +43,24 @@
       facingMode: ['user'],
       resizeMode: ['none', 'crop-and-scale'],
       aspectRatio: { min: 0.5, max: 2.0 },
-      deviceId: 'default-camera-interceptor',
-      groupId: 'default-group-interceptor'
+      deviceId: FAKE_DEVICE_ID,
+      groupId: FAKE_GROUP_ID
     },
     settings: function(meta) {
       return {
         width: (meta && meta.width) || 1280,
         height: (meta && meta.height) || 720,
         frameRate: (meta && meta.frameRate) || 30,
-        deviceId: 'default-camera-interceptor',
+        deviceId: FAKE_DEVICE_ID,
         facingMode: 'user',
         aspectRatio: ((meta && meta.width) || 1280) / ((meta && meta.height) || 720)
       };
     },
     device: {
-      deviceId: 'default-camera-interceptor',
+      deviceId: FAKE_DEVICE_ID,
       kind: 'videoinput',
-      label: 'USB Camera',
-      groupId: 'default-group-interceptor'
+      label: 'Integrated Camera',
+      groupId: FAKE_GROUP_ID
     }
   };
 
@@ -190,7 +194,7 @@
     };
 
     try {
-      Object.defineProperty(track, 'label', { get: function() { return 'USB Camera'; }, configurable: true });
+      Object.defineProperty(track, 'label', { get: function() { return 'Integrated Camera'; }, configurable: true });
     } catch(e) {}
 
     return track;
@@ -250,52 +254,27 @@
         throw e;
       }
 
-      // Canvas-based captureStream — downscale large videos for performance
-      var MAX_DIM = 1280;
-      var vw = v.videoWidth || 640;
-      var vh = v.videoHeight || 480;
-      var scale = 1;
-      if (vw > MAX_DIM || vh > MAX_DIM) {
-        scale = MAX_DIM / Math.max(vw, vh);
-      }
-      var canvas = document.createElement('canvas');
-      canvas.width = Math.round(vw * scale);
-      canvas.height = Math.round(vh * scale);
-      var ctx = canvas.getContext('2d', { willReadFrequently: true });
-
       _frameCount = 0;
-      _cachedCanvas = canvas;
 
-      // Use requestVideoFrameCallback for frame-perfect sync with video playback
-      function drawNextFrame() {
-        if (!v.paused && v.readyState >= 2) {
-          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      // Force Chrome to keep rendering frames by watching currentTime
+      var _lastTime = -1;
+      function tick() {
+        if (!v.paused && v.currentTime !== _lastTime) {
+          _lastTime = v.currentTime;
           _frameCount++;
         }
-        if (!v.paused) {
-          if (v.requestVideoFrameCallback) {
-            v.requestVideoFrameCallback(drawNextFrame);
-          } else {
-            requestAnimationFrame(drawNextFrame);
-          }
-        }
+        if (!v.paused) requestAnimationFrame(tick);
       }
+      requestAnimationFrame(tick);
 
-      if (v.requestVideoFrameCallback) {
-        v.requestVideoFrameCallback(drawNextFrame);
-      } else {
-        requestAnimationFrame(drawNextFrame);
-      }
-
-      // Use lower capture FPS for larger canvases to reduce encoding overhead
-      var captureFps = (canvas.width * canvas.height > 1280 * 720) ? 15 : 30;
-      _cachedStream = canvas.captureStream(captureFps);
+      // Use video.captureStream directly — avoids Sumsub trusted_media canvas detection
+      _cachedStream = v.captureStream(30);
       var tracks = _cachedStream.getVideoTracks();
-      console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
+      console.log('[CamIntercept MAIN] Video stream captured, tracks:', tracks.length);
 
       // Log frame count after 2 seconds
       setTimeout(function() {
-        console.log('[CamIntercept MAIN] Frames drawn so far:', _frameCount);
+        console.log('[CamIntercept MAIN] Frames advanced:', _frameCount);
       }, 2000);
 
       for (var i = 0; i < tracks.length; i++) wrapTrack(tracks[i], STATE.videoMeta);

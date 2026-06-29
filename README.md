@@ -119,6 +119,15 @@ Exits 0 on success, 1 on failure. Screenshots saved to `test-output/`.
 
 - **Storage persistence:** Video data is stored as base64 in `chrome.storage.local`. Videos larger than 50MB are rejected at load time. Clear storage via the extension's "Clear" button in the log panel or by removing the extension.
 
+- **Persona KYC:** Not supported. Persona uses `default-src *` in their CSP with no explicit `media-src`, which blocks both `blob:` and `data:` schemes at the browser level. No extension-side workaround exists — this is enforced by Chrome's CSP engine regardless of extension privileges. Declarative Net Request header modification was attempted and did not override the policy.
+
+- **Provider support matrix:**
+  - ✅ Sumsub (blockchain.com) — `media-src` includes `blob:` + video.captureStream() evades trusted_media detection
+  - ✅ Onfido — no restrictive CSP, works out of box
+  - ✅ Wise.com — `media-src` allows `data:` via fallback
+  - ✅ webcamtests.com / webcammictest.com — no CSP restrictions
+  - ❌ Persona (withpersona.com) — `default-src *` blocks all non-network schemes
+
 ## Test Page Descriptions
 
 ### `test-pages/basic-camera.html`

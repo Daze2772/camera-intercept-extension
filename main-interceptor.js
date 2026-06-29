@@ -322,9 +322,12 @@
   // OnlyFans/Wise check camera permission state before getUserMedia
   if (navigator.permissions && navigator.permissions.query) {
     var _origQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = function(descriptor) {
-      if (descriptor && descriptor.name === 'camera' && STATE.enabled) {
-        return Promise.resolve({ state: 'granted', onchange: null });
+    navigator.permissions.query = async function(descriptor) {
+      if (descriptor && descriptor.name === 'camera') {
+        await Promise.race([STATE.readyPromise, timeoutPromise]);
+        if (STATE.enabled) {
+          return { state: 'granted', onchange: null };
+        }
       }
       return _origQuery(descriptor);
     };

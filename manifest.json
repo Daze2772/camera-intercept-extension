@@ -7,11 +7,21 @@
     "storage",
     "unlimitedStorage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "csp_rules",
+        "enabled": true,
+        "path": "csp-rules.json"
+      }
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },

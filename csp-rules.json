@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "content-security-policy",
+          "operation": "append",
+          "value": "media-src blob: data: https: http:"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*withpersona.com*",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "content-security-policy",
+          "operation": "append",
+          "value": "media-src blob: data: https: http:"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*moonpay.withpersona.com*",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  }
+]

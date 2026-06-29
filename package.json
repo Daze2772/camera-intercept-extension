@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "javascript-obfuscator": "^5.4.3",
     "puppeteer": "^25.1.0"
   }
 }

@@ -14,11 +14,11 @@
     document.documentElement.appendChild(banner);
   } catch(e) {}
 
-  // ── Bridge: sync chrome.storage → main world via postMessage + CustomEvent ─
+  // ── Bridge: sync chrome.storage → main world + build blob URL ────────
   function syncToMainWorld() {
     chrome.storage.local.get(
       ['interceptionEnabled', 'activeProfileId', 'profiles'],
-      function(data) {
+      async function(data) {
         var enabled = data.interceptionEnabled || false;
         var activeId = data.activeProfileId;
         var profiles = data.profiles || [];
@@ -27,34 +27,37 @@
           profile = profiles.find(function(p) { return p.id === activeId; });
         }
 
-        var detail;
         if (enabled && profile && profile.videoData) {
-          detail = {
+          // Create blob URL in privileged context (extension origin, bypasses page CSP)
+          try {
+            var blob = await base64ToBlob(profile.videoData, profile.videoMime || 'video/webm');
+            var blobUrl = URL.createObjectURL(blob);
+          } catch(e) {
+            console.error('[CamIntercept BRIDGE] Blob URL creation failed:', e.message);
+            blobUrl = null;
+          }
+
+          var detail = {
             action: 'enable',
             videoData: profile.videoData,
             videoMime: profile.videoMime || 'video/webm',
-            videoMeta: profile.videoMeta || null
+            videoMeta: profile.videoMeta || null,
+            blobUrl: blobUrl
           };
-          console.log('[CamIntercept BRIDGE] Enabled, video:', (profile.videoData.length / 1024).toFixed(1), 'KB base64');
+          document.dispatchEvent(new CustomEvent('__camCommand', { detail: detail }));
+          window.postMessage(Object.assign({ source: 'cam-intercept-bridge' }, detail), '*');
+          console.log('[CamIntercept BRIDGE] Enabled, video:', (profile.videoData.length / 1024).toFixed(1), 'KB base64', blobUrl ? '(with blob URL)' : '(no blob URL)');
         } else if (enabled) {
-          detail = { action: 'enable', videoData: null };
-          console.log('[CamIntercept BRIDGE] Enabled, NO VIDEO loaded');
+          var detail = { action: 'enable', videoData: null };
+          document.dispatchEvent(new CustomEvent('__camCommand', { detail: detail }));
+          window.postMessage(Object.assign({ source: 'cam-intercept-bridge' }, detail), '*');
+          console.log('[CamIntercept BRIDGE] Enabled, NO VIDEO');
         } else {
-          detail = { action: 'disable' };
+          var detail = { action: 'disable' };
+          document.dispatchEvent(new CustomEvent('__camCommand', { detail: detail }));
+          window.postMessage(Object.assign({ source: 'cam-intercept-bridge' }, detail), '*');
           console.log('[CamIntercept BRIDGE] Disabled');
         }
-
-        // 1. CustomEvent for same-frame main-world interceptor
-        document.dispatchEvent(new CustomEvent('__camCommand', { detail: detail }));
-
-        // 2. postMessage to reach cross-origin iframes (Veriff, etc.)
-        window.postMessage({
-          source: 'cam-intercept-bridge',
-          action: detail.action,
-          videoData: detail.videoData,
-          videoMime: detail.videoMime,
-          videoMeta: detail.videoMeta
-        }, '*');
       }
     );
   }

@@ -14,6 +14,7 @@
     videoData: null,
     videoMime: 'video/webm',
     videoMeta: null,
+    blobUrl: null,  // Provided by content script (extension origin, bypasses CSP)
     readyPromise: new Promise(function(r) { _readyResolve = r; })
   };
 
@@ -130,26 +131,15 @@
   async function loadVideo(v, base64, mime) {
     mime = mime || 'video/webm';
 
-    // Try blob: URL first (works on Sumsub, Onfido, webcamtests)
-    var blob = await base64ToBlob(base64, mime);
-    var blobUrl = URL.createObjectURL(blob);
-
-    try {
-      await new Promise(function(resolve, reject) {
-        v.addEventListener('canplay', function() { resolve(); }, { once: true });
-        v.addEventListener('error', function(e) { reject(e); }, { once: true });
-        v.src = blobUrl;
-        v.load();
-      });
-      console.log('[CamIntercept MAIN] blob: URL loaded successfully');
-      return;
-    } catch(e) {
-      console.warn('[CamIntercept MAIN] blob: URL failed (CSP?), trying data: URL:', e.message);
-      URL.revokeObjectURL(blobUrl);
+    // Use blob URL provided by content script (extension origin, bypasses CSP)
+    // If not available, create our own (may be blocked by strict CSP)
+    var blobUrl = STATE.blobUrl;
+    if (!blobUrl) {
+      var blob = await base64ToBlob(base64, mime);
+      blobUrl = URL.createObjectURL(blob);
     }
 
-    // Fallback: data: URL (works on Wise.com where media-src allows data: but not blob:)
-    v.src = 'data:' + mime + ';base64,' + base64;
+    v.src = blobUrl;
     return new Promise(function(resolve, reject) {
       if (v.readyState >= 3) { resolve(); return; }
       v.addEventListener('canplay', function() { resolve(); }, { once: true });
@@ -353,6 +343,7 @@
       STATE.videoData = d.videoData || null;
       STATE.videoMime = d.videoMime || 'video/webm';
       STATE.videoMeta = d.videoMeta || null;
+      STATE.blobUrl = d.blobUrl || null;
 
       if (_readyResolve) {
         _readyResolve();

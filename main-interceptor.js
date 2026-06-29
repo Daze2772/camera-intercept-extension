@@ -319,15 +319,13 @@
   };
 
   // ── PATCH: permissions.query ─────────────────────────────────────
-  // OnlyFans/Wise check camera permission state before getUserMedia
+  // Return granted immediately — OnlyFans/Wise cache the first result
   if (navigator.permissions && navigator.permissions.query) {
     var _origQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = async function(descriptor) {
+    var _grantedObj = { state: 'granted', onchange: null };
+    navigator.permissions.query = function(descriptor) {
       if (descriptor && descriptor.name === 'camera') {
-        await Promise.race([STATE.readyPromise, timeoutPromise]);
-        if (STATE.enabled) {
-          return { state: 'granted', onchange: null };
-        }
+        return Promise.resolve(_grantedObj);
       }
       return _origQuery(descriptor);
     };

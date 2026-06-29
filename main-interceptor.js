@@ -260,25 +260,47 @@
 
       _frameCount = 0;
 
-      // Force Chrome to keep rendering frames by watching currentTime
-      var _lastTime = -1;
-      function tick() {
-        if (!v.paused && v.currentTime !== _lastTime) {
-          _lastTime = v.currentTime;
+      // Canvas-based captureStream — downscale large videos for performance
+      var MAX_DIM = 1280;
+      var vw = v.videoWidth || 640;
+      var vh = v.videoHeight || 480;
+      var scale = 1;
+      if (vw > MAX_DIM || vh > MAX_DIM) {
+        scale = MAX_DIM / Math.max(vw, vh);
+      }
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(vw * scale);
+      canvas.height = Math.round(vh * scale);
+      var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      function drawNextFrame() {
+        if (!v.paused && v.readyState >= 2) {
+          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
           _frameCount++;
         }
+        if (!v.paused) {
+          if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(drawNextFrame);
+          else requestAnimationFrame(drawNextFrame);
+        }
+      }
+      if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(drawNextFrame);
+      else requestAnimationFrame(drawNextFrame);
+
+      // Also keep Chrome decoding frames via rAF + currentTime read
+      var _lastTime = -1;
+      function tick() {
+        if (!v.paused && v.currentTime !== _lastTime) _lastTime = v.currentTime;
         if (!v.paused) requestAnimationFrame(tick);
       }
       requestAnimationFrame(tick);
 
-      // Use video.captureStream directly — avoids Sumsub trusted_media canvas detection
-      _cachedStream = v.captureStream(30);
+      var captureFps = (canvas.width * canvas.height > 1280 * 720) ? 15 : 30;
+      _cachedStream = canvas.captureStream(captureFps);
       var tracks = _cachedStream.getVideoTracks();
-      console.log('[CamIntercept MAIN] Video stream captured, tracks:', tracks.length);
+      console.log('[CamIntercept MAIN] Canvas stream captured, tracks:', tracks.length, 'canvas:', canvas.width + 'x' + canvas.height);
 
-      // Log frame count after 2 seconds
       setTimeout(function() {
-        console.log('[CamIntercept MAIN] Frames advanced:', _frameCount);
+        console.log('[CamIntercept MAIN] Frames drawn so far:', _frameCount);
       }, 2000);
 
       for (var i = 0; i < tracks.length; i++) wrapTrack(tracks[i], STATE.videoMeta);

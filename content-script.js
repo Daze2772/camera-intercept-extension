@@ -14,6 +14,43 @@
     document.documentElement.appendChild(banner);
   } catch(e) {}
 
+  // ── Chunked base64 → Blob (async, no UI freeze) ───────────────────
+  function base64ToBlob(base64, mime) {
+    return new Promise(function(resolve) {
+      var CHUNK = 1048576;
+      var binaryChunks = [];
+      var total = base64.length;
+      var pos = 0;
+
+      function next() {
+        if (pos >= total) {
+          var totalLen = 0;
+          for (var i = 0; i < binaryChunks.length; i++) totalLen += binaryChunks[i].length;
+          var result = new Uint8Array(totalLen);
+          var off = 0;
+          for (var i = 0; i < binaryChunks.length; i++) {
+            result.set(binaryChunks[i], off);
+            off += binaryChunks[i].length;
+          }
+          resolve(new Blob([result], { type: mime }));
+          return;
+        }
+        var end = Math.min(pos + CHUNK, total);
+        var segment = base64.substring(pos, end);
+        if (end === total && segment.length % 4 !== 0) {
+          segment += '==='.substring(0, 4 - (segment.length % 4));
+        }
+        var binary = atob(segment);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        binaryChunks.push(bytes);
+        pos = end;
+        setTimeout(next, 0);
+      }
+      setTimeout(next, 0);
+    });
+  }
+
   // ── Bridge: sync chrome.storage → main world + build blob URL ────────
   function syncToMainWorld() {
     chrome.storage.local.get(
